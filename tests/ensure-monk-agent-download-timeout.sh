@@ -5,9 +5,14 @@
 set -eu
 
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-fixture_bin="$repo_root/tests/fixtures/ensure-monk-agent"
+fixture_source="$repo_root/tests/fixtures/ensure-monk-agent/curl"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT HUP INT TERM
+
+fixture_bin="$work_dir/bin"
+mkdir -p "$fixture_bin"
+cp "$fixture_source" "$fixture_bin/curl"
+chmod +x "$fixture_bin/curl"
 
 calls="$work_dir/curl-calls"
 : >"$calls"
@@ -32,6 +37,8 @@ if grep -v ' bounded=1$' "$calls"; then
   exit 1
 fi
 
+# wget is the fallback downloader. Keep each transfer to one timeout-bounded
+# attempt so its retry policy cannot extend the SessionStart path unexpectedly.
 [ "$(grep -F -c 'wget -t 1 -T "$download_stall_timeout"' "$repo_root/scripts/ensure-monk-agent.sh")" -eq 2 ]
 
 cmp "$repo_root/scripts/ensure-monk-agent.sh" "$repo_root/plugins/monk/scripts/ensure-monk-agent.sh"
