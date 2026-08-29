@@ -31,6 +31,12 @@ $DownloadBase = if ($env:MONK_AGENT_DOWNLOAD_BASE) { $env:MONK_AGENT_DOWNLOAD_BA
   "https://get.monk.io/$Channel"
 }
 $AutoUpdate = if ($env:MONK_AGENT_AUTO_UPDATE) { $env:MONK_AGENT_AUTO_UPDATE } else { "1" }
+$InstallerLockTimeoutRaw = if ($env:MONK_AGENT_INSTALL_LOCK_TIMEOUT) { $env:MONK_AGENT_INSTALL_LOCK_TIMEOUT } else { "180" }
+$InstallerLockTimeoutSeconds = 0
+if (-not [int]::TryParse($InstallerLockTimeoutRaw, [ref]$InstallerLockTimeoutSeconds) -or $InstallerLockTimeoutSeconds -le 0) {
+  [Console]::Error.WriteLine("MONK_AGENT_INSTALL_LOCK_TIMEOUT must be a positive integer number of seconds.")
+  exit 2
+}
 
 $Target = Join-Path $InstallDir "monk-agent.exe"
 $ChecksumInstalled = Join-Path $InstallDir "monk-agent.sha256"
@@ -156,10 +162,13 @@ $InstallerMutex = New-Object System.Threading.Mutex($false, "Local\monk-agent-in
 $InstallerMutexOwned = $false
 try {
   try {
-    $InstallerMutexOwned = $InstallerMutex.WaitOne()
+    $InstallerMutexOwned = $InstallerMutex.WaitOne([TimeSpan]::FromSeconds($InstallerLockTimeoutSeconds))
   } catch [System.Threading.AbandonedMutexException] {
     # A previous installer died while holding the mutex; ownership transfers to us.
     $InstallerMutexOwned = $true
+  }
+  if (-not $InstallerMutexOwned) {
+    throw "Timed out after ${InstallerLockTimeoutSeconds}s waiting for another monk-agent installer to finish. Retry after the other installation completes."
   }
 
   # Windows PowerShell 5.1 otherwise delegates response parsing to the Internet
