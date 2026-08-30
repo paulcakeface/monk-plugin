@@ -223,7 +223,11 @@ function Show-SigninNudge {
   } catch {
     return
   }
-  if ($Auth.signedIn) {
+  $SignedInProperty = $Auth.PSObject.Properties['signedIn']
+  if ($null -eq $SignedInProperty -or $SignedInProperty.Value -isnot [bool]) {
+    return
+  }
+  if ($SignedInProperty.Value) {
     return
   }
   # $Client is resolved once at the top of the script (Cursor-aware ordering).
