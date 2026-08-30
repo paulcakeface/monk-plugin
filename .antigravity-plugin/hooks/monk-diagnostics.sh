@@ -28,7 +28,47 @@ if [ ! -x "$agent" ]; then
   exit 0
 fi
 
-# The handler prints diagnostics to stderr and the required {} to stdout.
-cat | "$agent" hook diagnostics --format antigravity || printf '%s\n' "{}"
+helper_timeout="${MONK_DIAGNOSTICS_HELPER_TIMEOUT:-10}"
+case "$helper_timeout" in
+  *[!0-9]*|0*) helper_timeout=10 ;;
+esac
 
+run_diagnostics_helper() {
+  helper_dir="$(mktemp -d "${TMPDIR:-/tmp}/monk-diagnostics.XXXXXX")" || return 1
+  helper_input="$helper_dir/input"
+  helper_output="$helper_dir/output"
+  helper_error="$helper_dir/error"
+  helper_timed_out="$helper_dir/timed-out"
+  cat >"$helper_input" || { rm -rf "$helper_dir"; return 1; }
+
+  "$agent" hook diagnostics --format antigravity \
+    <"$helper_input" >"$helper_output" 2>"$helper_error" &
+  helper_pid=$!
+  (
+    sleep "$helper_timeout"
+    : >"$helper_timed_out"
+    kill -TERM "$helper_pid" 2>/dev/null || true
+    sleep 1
+    kill -KILL "$helper_pid" 2>/dev/null || true
+  ) &
+  watchdog_pid=$!
+
+  if wait "$helper_pid" 2>/dev/null; then
+    helper_status=0
+  else
+    helper_status=$?
+  fi
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+
+  if [ ! -f "$helper_timed_out" ]; then
+    cat "$helper_error" >&2
+    cat "$helper_output"
+  fi
+  rm -rf "$helper_dir"
+  return "$helper_status"
+}
+
+# The handler prints diagnostics to stderr and the required {} to stdout.
+run_diagnostics_helper || printf '%s\n' "{}"
 exit 0

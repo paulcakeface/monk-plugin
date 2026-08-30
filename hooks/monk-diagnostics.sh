@@ -27,6 +27,46 @@ if [ -t 0 ]; then exit 0; fi
 agent="${MONK_AGENT_PATH:-${MONK_AGENT_INSTALL_DIR:-"$HOME/.monk/bin"}/monk-agent}"
 [ -x "$agent" ] || exit 0
 
-cat | "$agent" hook diagnostics --format "$fmt" || exit 0
+helper_timeout="${MONK_DIAGNOSTICS_HELPER_TIMEOUT:-10}"
+case "$helper_timeout" in
+  *[!0-9]*|0*) helper_timeout=10 ;;
+esac
 
+run_diagnostics_helper() {
+  helper_dir="$(mktemp -d "${TMPDIR:-/tmp}/monk-diagnostics.XXXXXX")" || return 1
+  helper_input="$helper_dir/input"
+  helper_output="$helper_dir/output"
+  helper_error="$helper_dir/error"
+  helper_timed_out="$helper_dir/timed-out"
+  cat >"$helper_input" || { rm -rf "$helper_dir"; return 1; }
+
+  "$agent" hook diagnostics --format "$fmt" \
+    <"$helper_input" >"$helper_output" 2>"$helper_error" &
+  helper_pid=$!
+  (
+    sleep "$helper_timeout"
+    : >"$helper_timed_out"
+    kill -TERM "$helper_pid" 2>/dev/null || true
+    sleep 1
+    kill -KILL "$helper_pid" 2>/dev/null || true
+  ) &
+  watchdog_pid=$!
+
+  if wait "$helper_pid" 2>/dev/null; then
+    helper_status=0
+  else
+    helper_status=$?
+  fi
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+
+  if [ ! -f "$helper_timed_out" ]; then
+    cat "$helper_error" >&2
+    cat "$helper_output"
+  fi
+  rm -rf "$helper_dir"
+  return "$helper_status"
+}
+
+run_diagnostics_helper || exit 0
 exit 0

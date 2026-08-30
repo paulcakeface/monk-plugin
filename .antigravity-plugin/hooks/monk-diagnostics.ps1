@@ -20,7 +20,53 @@ $agent = if ($env:MONK_AGENT_PATH) { $env:MONK_AGENT_PATH } else { Join-Path $In
 
 if (-not (Test-Path $agent)) { exit 0 }
 
-# The binary reads the payload straight from stdin (see block-monk.ps1 for why we
-# do not read it into a PowerShell string and re-pipe it).
-try { & $agent hook diagnostics --format antigravity } catch { }
+
+# Buffer the hook payload as bytes so the helper receives the original stdin
+# exactly, while still allowing us to run it as a bounded child process.
+$inputStream = [Console]::OpenStandardInput()
+$inputBuffer = New-Object byte[] 4096
+$payloadStream = New-Object System.IO.MemoryStream
+while (($bytesRead = $inputStream.Read($inputBuffer, 0, $inputBuffer.Length)) -gt 0) {
+  $payloadStream.Write($inputBuffer, 0, $bytesRead)
+}
+$hookBytes = $payloadStream.ToArray()
+$payloadStream.Dispose()
+
+$helperTimeoutMs = 10000
+if ($env:MONK_DIAGNOSTICS_HELPER_TIMEOUT_MS -match '^[1-9][0-9]*$') {
+  $helperTimeoutMs = [int]$env:MONK_DIAGNOSTICS_HELPER_TIMEOUT_MS
+}
+
+$agentProcess = $null
+try {
+  $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+  $startInfo.FileName = $agent
+  $startInfo.Arguments = "hook diagnostics --format antigravity"
+  $startInfo.UseShellExecute = $false
+  $startInfo.RedirectStandardInput = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $startInfo.CreateNoWindow = $true
+
+  $agentProcess = New-Object System.Diagnostics.Process
+  $agentProcess.StartInfo = $startInfo
+  [void]$agentProcess.Start()
+  $outputTask = $agentProcess.StandardOutput.ReadToEndAsync()
+  $errorTask = $agentProcess.StandardError.ReadToEndAsync()
+  $agentProcess.StandardInput.BaseStream.Write($hookBytes, 0, $hookBytes.Length)
+  $agentProcess.StandardInput.BaseStream.Close()
+
+  if ($agentProcess.WaitForExit($helperTimeoutMs)) {
+    $agentText = $outputTask.GetAwaiter().GetResult()
+    $agentError = $errorTask.GetAwaiter().GetResult()
+    if ($agentError) { [Console]::Error.Write($agentError) }
+    if ($agentText) { [Console]::Out.Write($agentText) }
+  } else {
+    try { $agentProcess.Kill() } catch { }
+    try { [void]$agentProcess.WaitForExit(1000) } catch { }
+  }
+} catch {
+} finally {
+  if ($agentProcess) { $agentProcess.Dispose() }
+}
 exit 0
